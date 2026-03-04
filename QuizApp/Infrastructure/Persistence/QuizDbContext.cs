@@ -3,12 +3,8 @@ using QuizApp.Domain.Entities;
 
 namespace QuizApp.Infrastructure.Persistence;
 
-public class QuizDbContext : DbContext
+public class QuizDbContext(DbContextOptions<QuizDbContext> options) : DbContext(options)
 {
-    public QuizDbContext(DbContextOptions<QuizDbContext> options) : base(options)
-    {
-    }
-
     public DbSet<Quiz> Quizzes => Set<Quiz>();
     public DbSet<Question> Questions => Set<Question>();
     public DbSet<QuizQuestion> QuizQuestions => Set<QuizQuestion>();

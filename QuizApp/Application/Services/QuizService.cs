@@ -1,19 +1,18 @@
-using Microsoft.EntityFrameworkCore;
 using QuizApp.Application.Common;
 using QuizApp.Application.DTOs;
+using QuizApp.Application.Interfaces;
 using QuizApp.Domain.Entities;
-using QuizApp.Infrastructure.Persistence;
 
 namespace QuizApp.Application.Services;
 
 public class QuizService
 {
-    private readonly QuizDbContext _context;
+    private readonly IQuizRepository _repository;
     private readonly ILogger<QuizService> _logger;
 
-    public QuizService(QuizDbContext context, ILogger<QuizService> logger)
+    public QuizService(IQuizRepository repository, ILogger<QuizService> logger)
     {
-        _context = context;
+        _repository = repository;
         _logger = logger;
     }
 
@@ -41,10 +40,15 @@ public class QuizService
 
             if (qInput.QuestionId.HasValue)
             {
-                question = await _context.Questions.FirstOrDefaultAsync(q => q.Id == qInput.QuestionId.Value);
-                if (question == null)
+                var existing = await _repository.GetByIdAsync(qInput.QuestionId.Value);
+                if (existing == null)
                 {
                     throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found");
+                }
+                question = existing.QuizQuestions.Select(qq => qq.Question).FirstOrDefault(q => q.Id == qInput.QuestionId.Value);
+                if (question == null)
+                {
+                    throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found in quizzes");
                 }
             }
             else if (!string.IsNullOrWhiteSpace(qInput.Text) && !string.IsNullOrWhiteSpace(qInput.CorrectAnswer))
@@ -55,7 +59,6 @@ public class QuizService
                     CorrectAnswer = qInput.CorrectAnswer.Trim(),
                     CreatedAt = DateTime.UtcNow
                 };
-                _context.Questions.Add(question);
             }
             else
             {
@@ -70,8 +73,8 @@ public class QuizService
             });
         }
 
-        _context.Quizzes.Add(quiz);
-        await _context.SaveChangesAsync();
+        await _repository.AddAsync(quiz);
+        await _repository.SaveChangesAsync();
 
         _logger.LogInformation("Quiz '{QuizName}' created with ID '{QuizId}'", quiz.Name, quiz.Id);
 
@@ -80,9 +83,7 @@ public class QuizService
 
     public async Task<QuizDetailsDto> UpdateQuizAsync(Guid quizId, UpdateQuizRequest request)
     {
-        var quiz = await _context.Quizzes
-            .Include(q => q.QuizQuestions)
-            .FirstOrDefaultAsync(q => q.Id == quizId);
+        var quiz = await _repository.GetByIdAsync(quizId);
 
         if (quiz == null)
         {
@@ -96,7 +97,7 @@ public class QuizService
 
         quiz.Name = request.Name.Trim();
 
-        _context.QuizQuestions.RemoveRange(quiz.QuizQuestions);
+        quiz.QuizQuestions.Clear();
 
         foreach (var qInput in request.Questions.OrderBy(q => q.Order))
         {
@@ -104,10 +105,15 @@ public class QuizService
 
             if (qInput.QuestionId.HasValue)
             {
-                question = await _context.Questions.FirstOrDefaultAsync(q => q.Id == qInput.QuestionId.Value);
-                if (question == null)
+                var existing = await _repository.GetByIdAsync(qInput.QuestionId.Value);
+                if (existing == null)
                 {
                     throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found");
+                }
+                question = existing.QuizQuestions.Select(qq => qq.Question).FirstOrDefault(q => q.Id == qInput.QuestionId.Value);
+                if (question == null)
+                {
+                    throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found in quizzes");
                 }
             }
             else if (!string.IsNullOrWhiteSpace(qInput.Text) && !string.IsNullOrWhiteSpace(qInput.CorrectAnswer))
@@ -118,7 +124,6 @@ public class QuizService
                     CorrectAnswer = qInput.CorrectAnswer.Trim(),
                     CreatedAt = DateTime.UtcNow
                 };
-                _context.Questions.Add(question);
             }
             else
             {
@@ -133,7 +138,8 @@ public class QuizService
             });
         }
 
-        await _context.SaveChangesAsync();
+        await _repository.UpdateAsync(quiz);
+        await _repository.SaveChangesAsync();
 
         _logger.LogInformation("Quiz '{QuizName}' (ID: '{QuizId}') updated", quiz.Name, quiz.Id);
 
@@ -142,7 +148,7 @@ public class QuizService
 
     public async Task SoftDeleteQuizAsync(Guid quizId)
     {
-        var quiz = await _context.Quizzes.FirstOrDefaultAsync(q => q.Id == quizId);
+        var quiz = await _repository.GetByIdAsync(quizId);
 
         if (quiz == null)
         {
@@ -150,17 +156,14 @@ public class QuizService
         }
 
         quiz.IsDeleted = true;
-        await _context.SaveChangesAsync();
+        await _repository.SaveChangesAsync();
 
         _logger.LogInformation("Quiz '{QuizName}' (ID: '{QuizId}') soft-deleted", quiz.Name, quiz.Id);
     }
 
     public async Task<QuizDetailsDto?> GetQuizByIdAsync(Guid quizId)
     {
-        var quiz = await _context.Quizzes
-            .Include(q => q.QuizQuestions)
-            .ThenInclude(qq => qq.Question)
-            .FirstOrDefaultAsync(q => q.Id == quizId);
+        var quiz = await _repository.GetByIdAsync(quizId);
 
         if (quiz == null)
         {
@@ -176,15 +179,21 @@ public class QuizService
         if (pageSize < 1) pageSize = 20;
         if (pageSize > 100) pageSize = 100; // Max page size
 
-        var query = _context.Quizzes.AsQueryable();
-        var totalCount = await query.CountAsync();
+        var query = _repository.Query();
+        var totalCount = await _repository.CountAsync();
 
-        var quizzes = await query
+        var quizzes = query
             .OrderByDescending(q => q.CreatedAt)
             .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
-            .Include(q => q.QuizQuestions)
-            .ToListAsync();
+            .Select(q => new Quiz
+            {
+                Id = q.Id,
+                Name = q.Name,
+                CreatedAt = q.CreatedAt,
+                QuizQuestions = q.QuizQuestions
+            })
+            .ToList();
 
         var items = quizzes.Select(q => new QuizListItemDto
         {
@@ -210,7 +219,7 @@ public class QuizService
         if (pageSize < 1) pageSize = 20;
         if (pageSize > 100) pageSize = 100;
 
-        var query = _context.Questions.AsQueryable();
+        var query = _repository.Query().SelectMany(q => q.QuizQuestions.Select(qq => qq.Question)).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(searchTerm))
         {
@@ -218,14 +227,13 @@ public class QuizService
             query = query.Where(q => q.Text.ToLower().Contains(term));
         }
 
-        var totalCount = await query.CountAsync();
+        var totalCount = query.Count();
 
-        var questions = await query
+        var questions = query
             .OrderByDescending(q => q.CreatedAt)
             .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
-            .Include(q => q.QuizQuestions)
-            .ToListAsync();
+            .ToList();
 
         var items = questions.Select(q => new QuestionSearchResultDto
         {

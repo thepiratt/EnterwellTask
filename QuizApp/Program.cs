@@ -1,9 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
+using QuizApp.Application.Interfaces;
 using QuizApp.Application.Services;
 using QuizApp.Infrastructure.Export;
 using QuizApp.Infrastructure.Middleware;
 using QuizApp.Infrastructure.Persistence;
+using QuizApp.Infrastructure.Persistence.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +27,9 @@ builder.Services.AddDbContext<QuizDbContext>(options =>
 
 // Add Application Services
 builder.Services.AddScoped<QuizService>();
+
+// Register repository implementations
+builder.Services.AddScoped<IQuizRepository, QuizRepository>();
 
 // Add MEF Exporter Loader
 builder.Services.AddSingleton<ExporterLoader>(sp =>
