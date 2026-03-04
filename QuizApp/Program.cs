@@ -30,6 +30,7 @@ builder.Services.AddScoped<QuizService>();
 
 // Register repository implementations
 builder.Services.AddScoped<IQuizRepository, QuizRepository>();
+builder.Services.AddScoped<IQuestionRepository, QuestionRepository>();
 
 // Add MEF Exporter Loader
 builder.Services.AddSingleton<ExporterLoader>(sp =>

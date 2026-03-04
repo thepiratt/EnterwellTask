@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using QuizApp.Application.Services;
 using QuizApp.Infrastructure.Export;
+using QuizApp.Domain.Entities;
 
 namespace QuizApp.Controllers;
 
@@ -67,25 +68,13 @@ public class ExportersController : ControllerBase
                 return BadRequest(new { message = $"Exporter '{exporter}' not found" });
             }
 
-            var quizEntity = new QuizApp.Domain.Entities.Quiz
-            {
-                Id = quiz.Id,
-                Name = quiz.Name,
-                CreatedAt = quiz.CreatedAt,
-                QuizQuestions = quiz.Questions
-                    .Select(q => new QuizApp.Domain.Entities.QuizQuestion
-                    {
-                        Order = q.Order,
-                        Question = new QuizApp.Domain.Entities.Question
-                        {
-                            Id = q.Id,
-                            Text = q.Text,
-                            CorrectAnswer = q.CorrectAnswer ?? string.Empty,
-                            CreatedAt = q.CreatedAt
-                        }
-                    })
-                    .ToList()
-            };
+            var quizEntity = Quiz.Rehydrate(quiz.Id, quiz.Name, quiz.CreatedAt, false, quiz.Questions
+                .Select(q => new QuizQuestion
+                {
+                    Order = q.Order,
+                    Question = Question.Rehydrate(q.Id, q.Text, q.CorrectAnswer ?? string.Empty, q.CreatedAt)
+                })
+                .ToList());
 
             var fileContent = exporterInstance.Export(quizEntity);
 

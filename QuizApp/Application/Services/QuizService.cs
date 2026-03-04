@@ -1,3 +1,5 @@
+using System.Linq;
+using Microsoft.EntityFrameworkCore;
 using QuizApp.Application.Common;
 using QuizApp.Application.DTOs;
 using QuizApp.Application.Interfaces;
@@ -8,69 +10,36 @@ namespace QuizApp.Application.Services;
 public class QuizService
 {
     private readonly IQuizRepository _repository;
+    private readonly IQuestionRepository _questionRepository;
     private readonly ILogger<QuizService> _logger;
 
-    public QuizService(IQuizRepository repository, ILogger<QuizService> logger)
+    public QuizService(IQuizRepository repository, IQuestionRepository questionRepository, ILogger<QuizService> logger)
     {
         _repository = repository;
+        _questionRepository = questionRepository;
         _logger = logger;
     }
 
     public async Task<QuizDetailsDto> CreateQuizAsync(CreateQuizRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.Name))
-        {
-            throw new ArgumentException("Quiz name cannot be empty", nameof(request.Name));
-        }
-
-        if (!request.Questions.Any())
-        {
-            throw new ArgumentException("Quiz must contain at least one question", nameof(request.Questions));
-        }
-
-        var quiz = new Quiz
-        {
-            Name = request.Name.Trim(),
-            CreatedAt = DateTime.UtcNow
-        };
+        var quiz = Quiz.Create(request.Name);
 
         foreach (var qInput in request.Questions.OrderBy(q => q.Order))
         {
-            Question? question = null;
+            Question question;
 
             if (qInput.QuestionId.HasValue)
             {
-                var existing = await _repository.GetByIdAsync(qInput.QuestionId.Value);
-                if (existing == null)
-                {
-                    throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found");
-                }
-                question = existing.QuizQuestions.Select(qq => qq.Question).FirstOrDefault(q => q.Id == qInput.QuestionId.Value);
-                if (question == null)
-                {
-                    throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found in quizzes");
-                }
-            }
-            else if (!string.IsNullOrWhiteSpace(qInput.Text) && !string.IsNullOrWhiteSpace(qInput.CorrectAnswer))
-            {
-                question = new Question
-                {
-                    Text = qInput.Text.Trim(),
-                    CorrectAnswer = qInput.CorrectAnswer.Trim(),
-                    CreatedAt = DateTime.UtcNow
-                };
+                question = await _questionRepository.GetByIdAsync(qInput.QuestionId.Value)
+                    ?? throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found");
             }
             else
             {
-                throw new ArgumentException("Each question must either have a QuestionId or both Text and CorrectAnswer");
+                question = Question.Create(qInput.Text ?? string.Empty, qInput.CorrectAnswer ?? string.Empty);
+                await _questionRepository.AddAsync(question);
             }
 
-            quiz.QuizQuestions.Add(new QuizQuestion
-            {
-                Quiz = quiz,
-                Question = question,
-                Order = qInput.Order
-            });
+            quiz.AddQuestion(question, qInput.Order);
         }
 
         await _repository.AddAsync(quiz);
@@ -83,59 +52,30 @@ public class QuizService
 
     public async Task<QuizDetailsDto> UpdateQuizAsync(Guid quizId, UpdateQuizRequest request)
     {
-        var quiz = await _repository.GetByIdAsync(quizId);
+        var quiz = await _repository.GetByIdAsync(quizId)
+            ?? throw new InvalidOperationException($"Quiz with ID '{quizId}' not found");
 
-        if (quiz == null)
-        {
-            throw new InvalidOperationException($"Quiz with ID '{quizId}' not found");
-        }
+        quiz.UpdateName(request.Name);
 
-        if (string.IsNullOrWhiteSpace(request.Name))
-        {
-            throw new ArgumentException("Quiz name cannot be empty", nameof(request.Name));
-        }
-
-        quiz.Name = request.Name.Trim();
-
+        // clear and re-add
         quiz.QuizQuestions.Clear();
 
         foreach (var qInput in request.Questions.OrderBy(q => q.Order))
         {
-            Question? question = null;
+            Question question;
 
             if (qInput.QuestionId.HasValue)
             {
-                var existing = await _repository.GetByIdAsync(qInput.QuestionId.Value);
-                if (existing == null)
-                {
-                    throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found");
-                }
-                question = existing.QuizQuestions.Select(qq => qq.Question).FirstOrDefault(q => q.Id == qInput.QuestionId.Value);
-                if (question == null)
-                {
-                    throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found in quizzes");
-                }
-            }
-            else if (!string.IsNullOrWhiteSpace(qInput.Text) && !string.IsNullOrWhiteSpace(qInput.CorrectAnswer))
-            {
-                question = new Question
-                {
-                    Text = qInput.Text.Trim(),
-                    CorrectAnswer = qInput.CorrectAnswer.Trim(),
-                    CreatedAt = DateTime.UtcNow
-                };
+                question = await _questionRepository.GetByIdAsync(qInput.QuestionId.Value)
+                    ?? throw new InvalidOperationException($"Question with ID '{qInput.QuestionId}' not found");
             }
             else
             {
-                throw new ArgumentException("Each question must either have a QuestionId or both Text and CorrectAnswer");
+                question = Question.Create(qInput.Text ?? string.Empty, qInput.CorrectAnswer ?? string.Empty);
+                await _questionRepository.AddAsync(question);
             }
 
-            quiz.QuizQuestions.Add(new QuizQuestion
-            {
-                Quiz = quiz,
-                Question = question,
-                Order = qInput.Order
-            });
+            quiz.AddQuestion(question, qInput.Order);
         }
 
         await _repository.UpdateAsync(quiz);
@@ -148,14 +88,10 @@ public class QuizService
 
     public async Task SoftDeleteQuizAsync(Guid quizId)
     {
-        var quiz = await _repository.GetByIdAsync(quizId);
+        var quiz = await _repository.GetByIdAsync(quizId)
+            ?? throw new InvalidOperationException($"Quiz with ID '{quizId}' not found");
 
-        if (quiz == null)
-        {
-            throw new InvalidOperationException($"Quiz with ID '{quizId}' not found");
-        }
-
-        quiz.IsDeleted = true;
+        quiz.SoftDelete();
         await _repository.SaveChangesAsync();
 
         _logger.LogInformation("Quiz '{QuizName}' (ID: '{QuizId}') soft-deleted", quiz.Name, quiz.Id);
@@ -182,18 +118,13 @@ public class QuizService
         var query = _repository.Query();
         var totalCount = await _repository.CountAsync();
 
-        var quizzes = query
+        var quizzes = await query
+            .Include(q => q.QuizQuestions)
+            .ThenInclude(qq => qq.Question)
             .OrderByDescending(q => q.CreatedAt)
             .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
-            .Select(q => new Quiz
-            {
-                Id = q.Id,
-                Name = q.Name,
-                CreatedAt = q.CreatedAt,
-                QuizQuestions = q.QuizQuestions
-            })
-            .ToList();
+            .ToListAsync();
 
         var items = quizzes.Select(q => new QuizListItemDto
         {
